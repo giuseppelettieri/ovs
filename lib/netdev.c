@@ -157,6 +157,9 @@ netdev_initialize(void)
         netdev_register_provider(&netdev_afxdp_nonpmd_class);
 #endif
 #endif
+#ifdef HAVE_NETHUNS
+        netdev_register_provider(&netdev_nethuns_class);
+#endif
 #if defined(__FreeBSD__) || defined(__NetBSD__)
         netdev_register_provider(&netdev_tap_class);
         netdev_register_provider(&netdev_bsd_class);

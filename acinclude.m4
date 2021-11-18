@@ -385,6 +385,35 @@ AC_DEFUN([OVS_CHECK_LINUX_AF_XDP], [
   AM_CONDITIONAL([HAVE_AF_XDP], test "$AF_XDP_ENABLE" = true)
 ])
 
+dnl OVS_CHECK_NETHUNS
+dnl
+dnl Check nethuns support
+AC_DEFUN([OVS_CHECK_NETHUNS], [
+  AC_ARG_ENABLE([nethuns],
+                [AC_HELP_STRING([--enable-nethuns], [Enable nethuns support])],
+                [], [enable_nethuns=no])
+  AC_MSG_CHECKING([whether nethuns is enabled])
+  if test "$enable_nethuns" != yes; then
+    AC_MSG_RESULT([no])
+    NETHUNS_ENABLE=false
+  else
+    AC_MSG_RESULT([yes])
+    NETHUNS_ENABLE=true
+
+    AC_CHECK_HEADER([nethuns/nethuns.h], [],
+      [AC_MSG_ERROR([unable to find nethuns/nethuns.h for nethuns support])],
+      [#define NETHUNS_SOCKET netmap
+      ])
+
+    AC_DEFINE([HAVE_NETHUNS], [1],
+              [Define to 1 if nethuns support is available and enabled.])
+    NETHUNS_LDADD=" -lnethuns -lnetmap -lpcap -lbpf"
+    AC_SUBST([NETHUNS_LDADD])
+
+  fi
+  AM_CONDITIONAL([HAVE_NETHUNS], test "$NETHUNS_ENABLE" = true)
+])
+
 dnl OVS_CHECK_DPDK
 dnl
 dnl Configure DPDK source tree

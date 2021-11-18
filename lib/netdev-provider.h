@@ -856,6 +856,10 @@ extern const struct netdev_class netdev_tap_class;
 extern const struct netdev_class netdev_afxdp_class;
 extern const struct netdev_class netdev_afxdp_nonpmd_class;
 #endif
+
+#ifdef HAVE_NETHUNS
+extern const struct netdev_class netdev_nethuns_class;
+#endif
 #ifdef  __cplusplus
 }
 #endif

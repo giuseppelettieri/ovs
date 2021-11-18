@@ -32,6 +32,8 @@
 #include <poll.h>
 #include <string.h>
 #include <unistd.h>
+#define NETHUNS_SOCKET NETHUNS_SOCKET_NETMAP
+#include <nethuns/nethuns.h>
 
 #include "coverage.h"
 #include "dp-packet.h"
@@ -53,7 +55,6 @@ VLOG_DEFINE_THIS_MODULE(netdev_nethuns);
 struct netdev_rxq_nethuns {
     struct netdev_rxq up;
 
-    // XXX other stuff
 };
 
 struct netdev_nethuns {
@@ -62,7 +63,7 @@ struct netdev_nethuns {
     /* Protects all members below. */
     struct ovs_mutex mutex;
 
-    // XXX other stuff
+    nethuns_socket_t *sock;	/* nethuns socket */
 };
 
 
@@ -128,12 +129,44 @@ static int
 netdev_nethuns_construct(struct netdev *netdev_)
 {
     struct netdev_nethuns *netdev = netdev_nethuns_cast(netdev_);
+    char errbuf[NETHUNS_ERRBUF_SIZE];
+    struct nethuns_socket_options netopt = {
+        .numblocks       = 1
+    ,   .numpackets      = 2048
+    ,   .packetsize      = 2048
+    ,   .timeout_ms      = 0
+    ,   .dir             = nethuns_out
+    ,   .capture         = nethuns_cap_zero_copy
+    ,   .mode            = nethuns_socket_rx_tx
+    ,   .promisc         = false
+    ,   .rxhash          = false
+    ,   .tx_qdisc_bypass = true
+    ,   .xdp_prog        = NULL
+    ,   .xdp_prog_sec    = NULL
+    ,   .xsk_map_name    = NULL
+    ,   .reuse_maps      = false
+    ,   .pin_dir         = NULL
+    };
 
     ovs_mutex_init(&netdev->mutex);
 
-    // XXX: do something here
+    VLOG_WARN("nethuns opening: %s", netdev_->name);
+    netdev->sock = nethuns_open(&netopt, errbuf);
+    if (netdev->sock == NULL) {
+        VLOG_WARN("nethuns socket creation failed: %s", errbuf);
+        goto error;
+    }
+    if (nethuns_bind(netdev->sock, netdev_->name, 0) < 0) {
+        VLOG_WARN("nethuns socket bind failed: %s", netdev->sock->base.errbuf);
+        goto error_close;
+    }
 
     return 0;
+
+error_close:
+    nethuns_close(netdev->sock);
+error:
+    return errno;
 }
 
 static void
@@ -141,7 +174,7 @@ netdev_nethuns_destruct(struct netdev *netdev_)
 {
     struct netdev_nethuns *netdev = netdev_nethuns_cast(netdev_);
    
-    // XXX: undo something here
+    nethuns_close(netdev->sock);
 
     ovs_mutex_destroy(&netdev->mutex);
 }
@@ -236,26 +269,30 @@ netdev_nethuns_rxq_drain(struct netdev_rxq *rxq_)
 }
 
 /*
- * Send a packet on the specified network device. The device could be either a
- * system or a tap device.
+ * Send a packet on the specified network device.
  */
 static int
 netdev_nethuns_send(struct netdev *netdev_, int qid OVS_UNUSED,
                 struct dp_packet_batch *batch,
-                bool concurrent_txq OVS_UNUSED)
+                bool concurrent_txq)
 {
-    struct netdev_nethuns *dev = netdev_nethuns_cast(netdev_);
-    const char *name = netdev_get_name(netdev_);
+    struct netdev_nethuns *netdev = netdev_nethuns_cast(netdev_);
     struct dp_packet *packet;
 
-    ovs_mutex_lock(&dev->mutex);
+    if (!concurrent_txq)
+        ovs_mutex_lock(&netdev->mutex);
 
-    // XXX actually send
-    (void)name;
-    (void)packet;
-    (void)batch;
+    DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
+        const void *data = dp_packet_data(packet);
+        size_t size = dp_packet_size(packet);
 
-    ovs_mutex_unlock(&dev->mutex);
+        nethuns_send(netdev->sock, data, size);
+    }
+    nethuns_flush(netdev->sock);
+
+    if (!concurrent_txq)
+        ovs_mutex_unlock(&netdev->mutex);
+    dp_packet_delete_batch(batch, true);
 
     return 0;
 }
@@ -271,7 +308,7 @@ netdev_nethuns_send_wait(struct netdev *netdev_, int qid OVS_UNUSED)
     struct netdev_nethuns *dev = netdev_nethuns_cast(netdev_);
 
     ovs_mutex_lock(&dev->mutex);
-    // XXX actually register
+    poll_immediate_wake();
     ovs_mutex_unlock(&dev->mutex);
 }
 
@@ -324,8 +361,7 @@ netdev_nethuns_get_mtu(const struct netdev *netdev_, int *mtup)
     int error = 0;
 
     ovs_mutex_lock(&netdev->mutex);
-    // XXX: actually get mtu
-    (void)mtup;
+    *mtup = 1500;
     ovs_mutex_unlock(&netdev->mutex);
 
     return error;
@@ -335,7 +371,7 @@ static int
 netdev_nethuns_get_ifindex(const struct netdev *netdev_)
 {
     struct netdev_nethuns *netdev = netdev_nethuns_cast(netdev_);
-    int ifindex = 0, error = 0;
+    int ifindex = 0, error = EOPNOTSUPP;
 
     ovs_mutex_lock(&netdev->mutex);
     // XXX: actually get ifindex
@@ -348,7 +384,7 @@ static int
 netdev_nethuns_get_carrier(const struct netdev *netdev_, bool *carrier)
 {
     struct netdev_nethuns *netdev = netdev_nethuns_cast(netdev_);
-    int error = 0;
+    int error = EOPNOTSUPP;
 
     ovs_mutex_lock(&netdev->mutex);
     // XXX: actually get carrier
@@ -449,7 +485,7 @@ netdev_nethuns_update_flags(struct netdev *netdev_, enum netdev_flags off,
     (void)netdev_;
     (void)off;
     (void)on;
-    (void)old_flagsp;
+    *old_flagsp = 0;
     return error;
 }
 
@@ -457,6 +493,7 @@ netdev_nethuns_update_flags(struct netdev *netdev_, enum netdev_flags off,
     .run = netdev_nethuns_run,                           \
     .wait = netdev_nethuns_wait,                         \
     .alloc = netdev_nethuns_alloc,                       \
+    .construct = netdev_nethuns_construct,               \
     .destruct = netdev_nethuns_destruct,                 \
     .dealloc = netdev_nethuns_dealloc,                   \
     .send = netdev_nethuns_send,                         \
@@ -484,5 +521,4 @@ netdev_nethuns_update_flags(struct netdev *netdev_, enum netdev_flags off,
 const struct netdev_class netdev_nethuns_class = {
     NETDEV_BSD_CLASS_COMMON,
     .type = "nethuns",
-    .construct = netdev_nethuns_construct,
 };
