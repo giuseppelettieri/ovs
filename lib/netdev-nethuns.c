@@ -166,7 +166,7 @@ netdev_nethuns_construct(struct netdev *netdev_)
 error_close:
     nethuns_close(netdev->sock);
 error:
-    return errno;
+    return errno ? errno : EINVAL;
 }
 
 static void
