@@ -49,6 +49,7 @@ endif
 
 # Build core vswitch libraries as before
 lib_libopenvswitch_la_SOURCES = \
+	lib/netdev-nethuns.h \
 	lib/netdev-nethuns.c \
 	lib/aes128.c \
 	lib/aes128.h \
