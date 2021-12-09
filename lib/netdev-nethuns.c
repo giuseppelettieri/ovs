@@ -259,7 +259,7 @@ netdev_nethuns_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
         pkt_id = nethuns_recv(netdev->sock, &pkthdr, &frame);
         if (!pkt_id)
             break;
-        slot = nethuns_ring_get_slot(&nethuns_socket(sock)->rx_ring, pkt_id);
+        slot = nethuns_ring_get_slot(&nethuns_socket(sock)->rx_ring, pkt_id - 1);
         npacket = (struct dp_packet_nethuns *)&slot->packet;
         packet = &npacket->packet;
         npacket->sock = sock;
