@@ -18,6 +18,8 @@
 #include <config.h>
 
 #include "netdev-provider.h"
+#include "netdev-nethuns.h"
+
 #include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -32,8 +34,6 @@
 #include <poll.h>
 #include <string.h>
 #include <unistd.h>
-#define NETHUNS_SOCKET NETHUNS_SOCKET_NETMAP
-#include <nethuns/nethuns.h>
 
 #include "coverage.h"
 #include "dp-packet.h"
@@ -54,7 +54,6 @@ VLOG_DEFINE_THIS_MODULE(netdev_nethuns);
 
 struct netdev_rxq_nethuns {
     struct netdev_rxq up;
-
 };
 
 struct netdev_nethuns {
@@ -133,7 +132,8 @@ netdev_nethuns_construct(struct netdev *netdev_)
     struct nethuns_socket_options netopt = {
         .numblocks       = 1
     ,   .numpackets      = 2048
-    ,   .packetsize      = 2048
+    /* we reuse the packet buffer to store the dp_packet */
+    ,   .packetsize      = sizeof(struct dp_packet)
     ,   .timeout_ms      = 0
     ,   .dir             = nethuns_out
     ,   .capture         = nethuns_cap_zero_copy
@@ -187,6 +187,23 @@ netdev_nethuns_dealloc(struct netdev *netdev_)
     free(netdev);
 }
 
+static struct dp_packet_nethuns *
+dp_packet_cast_nethuns(const struct dp_packet *d)
+{
+    ovs_assert(d->source == DPBUF_NETHUNS);
+    return CONTAINER_OF(d, struct dp_packet_nethuns, packet);
+}
+
+void free_nethuns_buf(struct dp_packet *p)
+{
+    struct dp_packet_nethuns *npacket;
+    struct nethuns_ring_slot *slot;
+   
+    npacket = dp_packet_cast_nethuns(p);
+    slot = (struct nethuns_ring_slot *)npacket - 1;
+    nethuns_rx_release(npacket->sock, slot->id);
+}
+
 static struct netdev_rxq *
 netdev_nethuns_rxq_alloc(void)
 {
@@ -201,7 +218,6 @@ netdev_nethuns_rxq_construct(struct netdev_rxq *rxq_)
     struct netdev *netdev_ = rxq->up.netdev;
     struct netdev_nethuns *netdev = netdev_nethuns_cast(netdev_);
 
-    // XXX: do something here
     (void)rxq;
     (void)netdev_;
     (void)netdev;
@@ -214,7 +230,7 @@ netdev_nethuns_rxq_destruct(struct netdev_rxq *rxq_)
 {
     struct netdev_rxq_nethuns *rxq = netdev_rxq_nethuns_cast(rxq_);
 
-    // XXX: undo something here
+    // XXX: undo something here?
     (void)rxq;
 }
 
@@ -231,15 +247,32 @@ netdev_nethuns_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
                     int *qfill)
 {
     struct netdev_rxq_nethuns *rxq = netdev_rxq_nethuns_cast(rxq_);
-    struct netdev *netdev = rxq->up.netdev;
+    struct netdev *netdev_ = rxq->up.netdev;
+    struct netdev_nethuns *netdev = netdev_nethuns_cast(netdev_);
+    nethuns_socket_t *sock = netdev->sock;
+    struct dp_packet_nethuns *npacket;
     struct dp_packet *packet;
+    struct nethuns_ring_slot *slot;
+    uint64_t pkt_id, n;
+    nethuns_pkthdr_t const *pkthdr;
+    uint8_t const *frame;
 
-    // XXX: receive here
-    (void)rxq;
-    (void)netdev;
-    (void)packet;
-    (void)batch;
-    (void)qfill;
+    for (n = 0; n < NETDEV_MAX_BURST; n++) {
+        pkt_id = nethuns_recv(netdev->sock, &pkthdr, &frame);
+        if (!pkt_id)
+            break;
+        slot = nethuns_ring_get_slot(&nethuns_socket(sock)->rx_ring, pkt_id);
+        npacket = (struct dp_packet_nethuns *)&slot->packet;
+        packet = &npacket->packet;
+        npacket->sock = sock;
+        npacket->pkt_id = pkt_id;
+        dp_packet_use_nethuns(packet, (void *)frame);
+        dp_packet_set_size(packet, pkthdr->len);
+        dp_packet_batch_add(batch, packet);
+    }
+
+    if (qfill)
+        *qfill = 0;
 
     return 0;
 }

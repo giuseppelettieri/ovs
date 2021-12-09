@@ -27,6 +27,7 @@
 
 #include "netdev-afxdp.h"
 #include "netdev-dpdk.h"
+#include "netdev-nethuns.h"
 #include "openvswitch/list.h"
 #include "packets.h"
 #include "util.h"
@@ -44,6 +45,7 @@ enum OVS_PACKED_ENUM dp_packet_source {
                                 * ref to dp_packet_init_dpdk() in dp-packet.c.
                                 */
     DPBUF_AFXDP,               /* Buffer data from XDP frame. */
+    DPBUF_NETHUNS,             /* Buffer data from nethuns frame. */
 };
 
 #define DP_PACKET_CONTEXT_SIZE 64
@@ -147,6 +149,14 @@ struct dp_packet_afxdp {
 };
 #endif
 
+#if HAVE_NETHUNS
+struct dp_packet_nethuns {
+    nethuns_socket_t *sock;
+    uint64_t pkt_id;
+    struct dp_packet packet;
+};
+#endif
+
 static inline void *dp_packet_data(const struct dp_packet *);
 static inline void dp_packet_set_data(struct dp_packet *, void *);
 static inline void *dp_packet_base(const struct dp_packet *);
@@ -183,7 +193,11 @@ void dp_packet_use_const(struct dp_packet *, const void *, size_t);
 #if HAVE_AF_XDP
 void dp_packet_use_afxdp(struct dp_packet *, void *, size_t, size_t);
 #endif
+#if HAVE_NETHUNS
+void dp_packet_use_nethuns(struct dp_packet *, void *);
+#endif
 void dp_packet_init_dpdk(struct dp_packet *);
+void dp_packet_init_nethuns(struct dp_packet *);
 
 void dp_packet_init(struct dp_packet *, size_t);
 void dp_packet_uninit(struct dp_packet *);
@@ -249,6 +263,11 @@ dp_packet_delete(struct dp_packet *b)
 
         if (b->source == DPBUF_AFXDP) {
             free_afxdp_buf(b);
+            return;
+        }
+
+        if (b->source == DPBUF_NETHUNS) {
+            free_nethuns_buf(b);
             return;
         }
 

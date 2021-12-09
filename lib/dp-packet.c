@@ -76,6 +76,18 @@ dp_packet_use_afxdp(struct dp_packet *b, void *data, size_t allocated,
 }
 #endif
 
+#if HAVE_NETHUNS
+void
+dp_packet_use_nethuns(struct dp_packet *b, void *data)
+{
+        dp_packet_set_base(b, data);
+        dp_packet_set_data(b, data);
+        dp_packet_set_size(b, 0);
+
+        dp_packet_init__(b, 2048 /* XXX */, DPBUF_NETHUNS);
+}
+#endif
+
 /* Initializes 'b' as an empty dp_packet that contains the 'allocated' bytes of
  * memory starting at 'base'.  'base' should point to a buffer on the stack.
  * (Nothing actually relies on 'base' being allocated on the stack.  It could
@@ -116,6 +128,12 @@ void
 dp_packet_init_dpdk(struct dp_packet *b)
 {
     b->source = DPBUF_DPDK;
+}
+
+void
+dp_packet_init_nethuns(struct dp_packet *b)
+{
+    b->source = DPBUF_NETHUNS;
 }
 
 /* Initializes 'b' as an empty dp_packet with an initial capacity of 'size'
@@ -267,6 +285,9 @@ dp_packet_resize(struct dp_packet *b, size_t new_headroom, size_t new_tailroom)
         OVS_NOT_REACHED();
 
     case DPBUF_AFXDP:
+        OVS_NOT_REACHED();
+
+    case DPBUF_NETHUNS:
         OVS_NOT_REACHED();
 
     case DPBUF_STUB:
