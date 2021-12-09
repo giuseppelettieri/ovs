@@ -552,4 +552,5 @@ netdev_nethuns_update_flags(struct netdev *netdev_, enum netdev_flags off,
 const struct netdev_class netdev_nethuns_class = {
     NETDEV_BSD_CLASS_COMMON,
     .type = "nethuns",
+    .is_pmd = true,
 };
