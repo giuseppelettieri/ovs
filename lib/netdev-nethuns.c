@@ -197,11 +197,9 @@ dp_packet_cast_nethuns(const struct dp_packet *d)
 void free_nethuns_buf(struct dp_packet *p)
 {
     struct dp_packet_nethuns *npacket;
-    struct nethuns_ring_slot *slot;
    
     npacket = dp_packet_cast_nethuns(p);
-    slot = (struct nethuns_ring_slot *)npacket - 1;
-    nethuns_rx_release(npacket->sock, slot->id);
+    nethuns_rx_release(npacket->sock, npacket->pkt_id);
 }
 
 static struct netdev_rxq *
