@@ -194,7 +194,7 @@ void dp_packet_use_const(struct dp_packet *, const void *, size_t);
 void dp_packet_use_afxdp(struct dp_packet *, void *, size_t, size_t);
 #endif
 #if HAVE_NETHUNS
-void dp_packet_use_nethuns(struct dp_packet *, void *);
+void dp_packet_use_nethuns(struct dp_packet *, void *, size_t);
 #endif
 void dp_packet_init_dpdk(struct dp_packet *);
 void dp_packet_init_nethuns(struct dp_packet *);

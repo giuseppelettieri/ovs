@@ -78,13 +78,9 @@ dp_packet_use_afxdp(struct dp_packet *b, void *data, size_t allocated,
 
 #if HAVE_NETHUNS
 void
-dp_packet_use_nethuns(struct dp_packet *b, void *data)
+dp_packet_use_nethuns(struct dp_packet *b, void *base, size_t allocated)
 {
-        dp_packet_set_base(b, data);
-        dp_packet_set_data(b, data);
-        dp_packet_set_size(b, 0);
-
-        dp_packet_init__(b, 2048 /* XXX */, DPBUF_NETHUNS);
+    dp_packet_use__(b, base, allocated, DPBUF_NETHUNS);
 }
 #endif
 
@@ -128,12 +124,6 @@ void
 dp_packet_init_dpdk(struct dp_packet *b)
 {
     b->source = DPBUF_DPDK;
-}
-
-void
-dp_packet_init_nethuns(struct dp_packet *b)
-{
-    b->source = DPBUF_NETHUNS;
 }
 
 /* Initializes 'b' as an empty dp_packet with an initial capacity of 'size'

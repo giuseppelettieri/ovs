@@ -266,7 +266,7 @@ netdev_nethuns_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
         packet = &npacket->packet;
         npacket->sock = sock;
         npacket->pkt_id = pkt_id;
-        dp_packet_use_nethuns(packet, (void *)frame);
+        dp_packet_use_nethuns(packet, (void *)frame, 2048);
         dp_packet_set_size(packet, pkthdr->len);
         dp_packet_batch_add(batch, packet);
     }
