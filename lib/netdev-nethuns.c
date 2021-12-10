@@ -150,7 +150,7 @@ netdev_nethuns_construct(struct netdev *netdev_)
 
     ovs_mutex_init(&netdev->mutex);
 
-    VLOG_WARN("nethuns opening: %s", netdev_->name);
+    VLOG_INFO("nethuns opening: %s", netdev_->name);
     netdev->sock = nethuns_open(&netopt, errbuf);
     if (netdev->sock == NULL) {
         VLOG_WARN("nethuns socket creation failed: %s", errbuf);
