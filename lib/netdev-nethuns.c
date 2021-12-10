@@ -484,10 +484,10 @@ netdev_nethuns_get_addr_list(const struct netdev *netdev_,
     struct netdev_nethuns *netdev = netdev_nethuns_cast(netdev_);
     int error = 0;
 
-    (void)netdev;
-    (void)addr;
-    (void)mask;
-    (void)n_cnt;
+    ovs_mutex_lock(&netdev->mutex);
+    error = netdev_get_addrs(netdev_get_name(netdev_), addr, mask, n_cnt);
+    ovs_mutex_unlock(&netdev->mutex);
+
     return error;
 }
 
