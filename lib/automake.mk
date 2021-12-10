@@ -49,8 +49,6 @@ endif
 
 # Build core vswitch libraries as before
 lib_libopenvswitch_la_SOURCES = \
-	lib/netdev-nethuns.h \
-	lib/netdev-nethuns.c \
 	lib/aes128.c \
 	lib/aes128.h \
 	lib/async-append.h \
@@ -473,6 +471,12 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/netdev-afxdp-pool.h \
 	lib/netdev-afxdp.c \
 	lib/netdev-afxdp.h
+endif
+
+if HAVE_NETHUNS
+lib_libopenvswitch_la_SOURCES += \
+	lib/netdev-nethuns.h \
+	lib/netdev-nethuns.c
 endif
 
 if DPDK_NETDEV
