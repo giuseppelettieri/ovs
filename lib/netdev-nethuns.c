@@ -130,7 +130,7 @@ netdev_nethuns_construct(struct netdev *netdev_)
     char errbuf[NETHUNS_ERRBUF_SIZE];
     struct nethuns_socket_options netopt = {
         .numblocks       = 1
-    ,   .numpackets      = 2048
+    ,   .numpackets      = 256
     /* we reuse the packet buffer to store the dp_packet */
     ,   .packetsize      = sizeof(struct dp_packet)
     ,   .timeout_ms      = 0
