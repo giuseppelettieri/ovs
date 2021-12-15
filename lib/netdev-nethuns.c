@@ -28,7 +28,6 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <ifaddrs.h>
-#include <pcap/pcap.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <poll.h>
