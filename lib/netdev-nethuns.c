@@ -155,7 +155,7 @@ netdev_nethuns_construct(struct netdev *netdev_)
         VLOG_WARN("nethuns socket creation failed: %s", errbuf);
         goto error;
     }
-    if (nethuns_bind(netdev->sock, netdev_->name, NETHUNS_ANY_QUEUE) < 0) {
+    if (nethuns_bind(netdev->sock, netdev_->name, 0) < 0) {
         VLOG_WARN("nethuns socket bind failed: %s", netdev->sock->base.errbuf);
         goto error_close;
     }
