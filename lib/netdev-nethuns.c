@@ -51,8 +51,11 @@
 
 VLOG_DEFINE_THIS_MODULE(netdev_nethuns);
 
-struct netdev_rxq_nethuns {
-    struct netdev_rxq up;
+struct netdev_nethuns_tx_lock {
+    /* Padding to make netdev_afxdp_tx_lock exactly one cache line long. */
+    PADDED_MEMBERS(CACHE_LINE_SIZE,
+        struct ovs_spin lock;
+    );
 };
 
 struct netdev_nethuns {
@@ -61,14 +64,14 @@ struct netdev_nethuns {
     /* Protects all members below. */
     struct ovs_mutex mutex;
 
-    nethuns_socket_t *sock;	/* nethuns socket */
+    nethuns_socket_t **socks;	/* nethuns sockets */
+    int requested_n_rxq;
+    struct netdev_nethuns_tx_lock *tx_locks;
 };
-
 
 //static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
 static void netdev_nethuns_run(const struct netdev_class *);
-static int netdev_nethuns_get_mtu(const struct netdev *netdev_, int *mtup);
 
 static bool
 is_netdev_nethuns_class(const struct netdev_class *netdev_class)
@@ -83,11 +86,95 @@ netdev_nethuns_cast(const struct netdev *netdev)
     return CONTAINER_OF(netdev, struct netdev_nethuns, up);
 }
 
-static struct netdev_rxq_nethuns *
-netdev_rxq_nethuns_cast(const struct netdev_rxq *rxq)
+
+static void nethuns_destroy_all(struct netdev_nethuns *dev);
+
+static int
+nethuns_configure_all(struct netdev *netdev)
 {
-    ovs_assert(is_netdev_nethuns_class(netdev_get_class(rxq->netdev)));
-    return CONTAINER_OF(rxq, struct netdev_rxq_nethuns, up);
+    struct netdev_nethuns *dev = netdev_nethuns_cast(netdev);
+    char errbuf[NETHUNS_ERRBUF_SIZE];
+    int i, n_rxq, n_txq;
+    struct nethuns_socket_options netopt = {
+        .numblocks       = 1
+    ,   .numpackets      = 256
+    /* we reuse the packet buffer to store the dp_packet */
+    ,   .packetsize      = sizeof(struct dp_packet)
+    ,   .timeout_ms      = 0
+    ,   .dir             = nethuns_out
+    ,   .capture         = nethuns_cap_zero_copy
+    ,   .mode            = nethuns_socket_rx_tx
+    ,   .promisc         = false
+    ,   .rxhash          = false
+    ,   .tx_qdisc_bypass = true
+    ,   .xdp_prog        = NULL
+    ,   .xdp_prog_sec    = NULL
+    ,   .xsk_map_name    = NULL
+    ,   .reuse_maps      = false
+    ,   .pin_dir         = NULL
+    };
+
+
+    ovs_assert(dev->socks == NULL);
+    ovs_assert(dev->tx_locks == NULL);
+
+    n_rxq = netdev_n_rxq(netdev);
+    dev->socks = xcalloc(n_rxq, sizeof *dev->socks);
+
+    /* Configure remaining queues. */
+    for (i = 0; i < n_rxq; i++) {
+        dev->socks[i] = nethuns_open(&netopt, errbuf);
+        if (dev->socks[i] == NULL) {
+            VLOG_ERR("%s: creation of socket %d failed: %s",
+                    netdev_get_name(netdev), i, errbuf);
+            goto err;
+        }
+        if (nethuns_bind(dev->socks[i], netdev_get_name(netdev), i) < 0) {
+            VLOG_WARN("%s: binding of socket %d failed: %s",
+                    netdev_get_name(netdev), i, dev->socks[i]->base.errbuf);
+            goto err;
+        }
+    }
+
+    n_txq = netdev_n_txq(netdev);
+    dev->tx_locks = xzalloc_cacheline(n_txq * sizeof *dev->tx_locks);
+
+    for (i = 0; i < n_txq; i++) {
+        ovs_spin_init(&dev->tx_locks[i].lock);
+    }
+
+    return 0;
+
+err:
+    nethuns_destroy_all(dev);
+    return EINVAL;
+}
+
+static void
+nethuns_destroy_all(struct netdev_nethuns *dev)
+{
+    int i;
+
+    if (dev->socks) {
+        for (i = 0; i < netdev_n_rxq(&dev->up); i++) {
+            if (dev->socks[i]) {
+                nethuns_close(dev->socks[i]);
+                dev->socks[i] = NULL;
+                VLOG_DBG("%s: Destroyed socks[%d].", netdev_get_name(&dev->up), i);
+            }
+        }
+
+        free(dev->socks);
+        dev->socks = NULL;
+    }
+
+    if (dev->tx_locks) {
+        for (i = 0; i < netdev_n_txq(&dev->up); i++) {
+            ovs_spin_destroy(&dev->tx_locks[i].lock);
+        }
+        free_cacheline(dev->tx_locks);
+        dev->tx_locks = NULL;
+    }
 }
 
 //static const char *
@@ -97,7 +184,7 @@ netdev_rxq_nethuns_cast(const struct netdev_rxq *rxq)
 //}
 
 /*
- * Perform periodic work needed by netdev. In BSD netdevs it checks for any
+ * Perform periodic work needed by netdev. In NETHUNS netdevs it checks for any
  * interface status changes, and eventually calls all the user callbacks.
  */
 static void
@@ -119,71 +206,35 @@ netdev_nethuns_wait(const struct netdev_class *netdev_class OVS_UNUSED)
 static struct netdev *
 netdev_nethuns_alloc(void)
 {
-    struct netdev_nethuns *netdev = xzalloc(sizeof *netdev);
-    return &netdev->up;
+    struct netdev_nethuns *dev = xzalloc(sizeof *dev);
+    return &dev->up;
 }
 
 static int
 netdev_nethuns_construct(struct netdev *netdev_)
 {
     struct netdev_nethuns *netdev = netdev_nethuns_cast(netdev_);
-    char errbuf[NETHUNS_ERRBUF_SIZE];
-    struct nethuns_socket_options netopt = {
-        .numblocks       = 1
-    ,   .numpackets      = 256
-    /* we reuse the packet buffer to store the dp_packet */
-    ,   .packetsize      = sizeof(struct dp_packet)
-    ,   .timeout_ms      = 0
-    ,   .dir             = nethuns_out
-    ,   .capture         = nethuns_cap_zero_copy
-    ,   .mode            = nethuns_socket_rx_tx
-    ,   .promisc         = false
-    ,   .rxhash          = false
-    ,   .tx_qdisc_bypass = true
-    ,   .xdp_prog        = NULL
-    ,   .xdp_prog_sec    = NULL
-    ,   .xsk_map_name    = NULL
-    ,   .reuse_maps      = false
-    ,   .pin_dir         = NULL
-    };
 
     ovs_mutex_init(&netdev->mutex);
 
-    VLOG_INFO("nethuns opening: %s", netdev_->name);
-    netdev->sock = nethuns_open(&netopt, errbuf);
-    if (netdev->sock == NULL) {
-        VLOG_WARN("nethuns socket creation failed: %s", errbuf);
-        goto error;
-    }
-    if (nethuns_bind(netdev->sock, netdev_->name, 0) < 0) {
-        VLOG_WARN("nethuns socket bind failed: %s", netdev->sock->base.errbuf);
-        goto error_close;
-    }
-
     return 0;
-
-error_close:
-    nethuns_close(netdev->sock);
-error:
-    return errno ? errno : EINVAL;
 }
 
 static void
-netdev_nethuns_destruct(struct netdev *netdev_)
+netdev_nethuns_destruct(struct netdev *netdev)
 {
-    struct netdev_nethuns *netdev = netdev_nethuns_cast(netdev_);
+    struct netdev_nethuns *dev = netdev_nethuns_cast(netdev);
    
-    nethuns_close(netdev->sock);
-
-    ovs_mutex_destroy(&netdev->mutex);
+    nethuns_destroy_all(dev);
+    ovs_mutex_destroy(&dev->mutex);
 }
 
 static void
-netdev_nethuns_dealloc(struct netdev *netdev_)
+netdev_nethuns_dealloc(struct netdev *netdev)
 {
-    struct netdev_nethuns *netdev = netdev_nethuns_cast(netdev_);
+    struct netdev_nethuns *dev = netdev_nethuns_cast(netdev);
 
-    free(netdev);
+    free(dev);
 }
 
 static struct dp_packet_nethuns *
@@ -201,52 +252,51 @@ void free_nethuns_buf(struct dp_packet *p)
     nethuns_rx_release(npacket->sock, npacket->pkt_id);
 }
 
-static struct netdev_rxq *
-netdev_nethuns_rxq_alloc(void)
+static int
+netdev_nethuns_reconfigure(struct netdev *netdev)
 {
-    struct netdev_rxq_nethuns *rxq = xzalloc(sizeof *rxq);
-    return &rxq->up;
+    struct netdev_nethuns *dev = netdev_nethuns_cast(netdev);
+    int err = 0;
+    ovs_mutex_lock(&dev->mutex);
+
+    if (netdev->n_rxq == dev->requested_n_rxq) {
+        goto out;
+    }
+
+    nethuns_destroy_all(dev);
+
+    netdev->n_rxq = dev->requested_n_rxq;
+    netdev->n_txq = netdev->n_rxq;
+
+    err = nethuns_configure_all(netdev);
+    if (err) {
+        VLOG_ERR("%s: nethuns device reconfiguration failed.",
+                 netdev_get_name(netdev));
+    }
+    netdev_change_seq_changed(netdev);
+out:
+    ovs_mutex_unlock(&dev->mutex);
+    return err;
 }
 
 static int
-netdev_nethuns_rxq_construct(struct netdev_rxq *rxq_)
+netdev_nethuns_rxq_construct(struct netdev_rxq *rxq OVS_UNUSED)
 {
-    struct netdev_rxq_nethuns *rxq = netdev_rxq_nethuns_cast(rxq_);
-    struct netdev *netdev_ = rxq->up.netdev;
-    struct netdev_nethuns *netdev = netdev_nethuns_cast(netdev_);
-
-    (void)rxq;
-    (void)netdev_;
-    (void)netdev;
-
     return 0;
 }
 
 static void
-netdev_nethuns_rxq_destruct(struct netdev_rxq *rxq_)
+netdev_nethuns_rxq_destruct(struct netdev_rxq *rxq OVS_UNUSED)
 {
-    struct netdev_rxq_nethuns *rxq = netdev_rxq_nethuns_cast(rxq_);
-
-    // XXX: undo something here?
-    (void)rxq;
-}
-
-static void
-netdev_nethuns_rxq_dealloc(struct netdev_rxq *rxq_)
-{
-    struct netdev_rxq_nethuns *rxq = netdev_rxq_nethuns_cast(rxq_);
-
-    free(rxq);
 }
 
 static int
-netdev_nethuns_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
+netdev_nethuns_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch,
                     int *qfill)
 {
-    struct netdev_rxq_nethuns *rxq = netdev_rxq_nethuns_cast(rxq_);
-    struct netdev *netdev_ = rxq->up.netdev;
-    struct netdev_nethuns *netdev = netdev_nethuns_cast(netdev_);
-    nethuns_socket_t *sock = netdev->sock;
+    struct netdev *netdev = rxq->netdev;
+    struct netdev_nethuns *dev = netdev_nethuns_cast(netdev);
+    nethuns_socket_t *sock = dev->socks[rxq->queue_id];
     struct dp_packet_nethuns *npacket;
     struct dp_packet *packet;
     struct nethuns_ring_slot *slot;
@@ -255,7 +305,7 @@ netdev_nethuns_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
     uint8_t const *frame;
 
     for (n = 0; n < NETDEV_MAX_BURST; n++) {
-        pkt_id = nethuns_recv(netdev->sock, &pkthdr, &frame);
+        pkt_id = nethuns_recv(sock, &pkthdr, &frame);
         if (!pkt_id)
             break;
         slot = nethuns_ring_get_slot(&nethuns_socket(sock)->rx_ring, pkt_id - 1);
@@ -279,22 +329,38 @@ netdev_nethuns_rxq_recv(struct netdev_rxq *rxq_, struct dp_packet_batch *batch,
  * when a packet is ready to be received with netdev_rxq_recv() on 'rxq'.
  */
 static void
-netdev_nethuns_rxq_wait(struct netdev_rxq *rxq_)
+netdev_nethuns_rxq_wait(struct netdev_rxq *rxq)
 {
-    struct netdev_rxq_nethuns *rxq = netdev_rxq_nethuns_cast(rxq_);
-
     // XXX register here
     (void)rxq;
 }
 
 /* Discards all packets waiting to be received from 'rxq'. */
 static int
-netdev_nethuns_rxq_drain(struct netdev_rxq *rxq_)
+netdev_nethuns_rxq_drain(struct netdev_rxq *rxq)
 {
-    struct netdev_rxq_nethuns *rxq = netdev_rxq_nethuns_cast(rxq_);
-
     // XXX dreain here
     (void)rxq;
+    return 0;
+}
+
+static int
+__netdev_nethuns_send(struct netdev_nethuns *dev, int qid,
+        struct dp_packet_batch *batch)
+{
+    struct dp_packet *packet;
+    nethuns_socket_t *sock = dev->socks[qid];
+
+    DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
+        const void *data = dp_packet_data(packet);
+        size_t size = dp_packet_size(packet);
+
+        nethuns_send(sock, data, size);
+    }
+    nethuns_flush(sock);
+
+    dp_packet_delete_batch(batch, true);
+
     return 0;
 }
 
@@ -302,29 +368,24 @@ netdev_nethuns_rxq_drain(struct netdev_rxq *rxq_)
  * Send a packet on the specified network device.
  */
 static int
-netdev_nethuns_send(struct netdev *netdev_, int qid OVS_UNUSED,
+netdev_nethuns_send(struct netdev *netdev, int qid,
                 struct dp_packet_batch *batch,
                 bool concurrent_txq)
 {
-    struct netdev_nethuns *netdev = netdev_nethuns_cast(netdev_);
-    struct dp_packet *packet;
+    struct netdev_nethuns *dev = netdev_nethuns_cast(netdev);
+    int ret;
 
-    if (!concurrent_txq)
-        ovs_mutex_lock(&netdev->mutex);
+    if (concurrent_txq) {
+        qid = qid % netdev_n_txq(netdev);
 
-    DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
-        const void *data = dp_packet_data(packet);
-        size_t size = dp_packet_size(packet);
-
-        nethuns_send(netdev->sock, data, size);
+        ovs_spin_lock(&dev->tx_locks[qid].lock);
+        ret = __netdev_nethuns_send(dev, qid, batch);
+        ovs_spin_unlock(&dev->tx_locks[qid].lock);
+    } else {
+        ret = __netdev_nethuns_send(dev, qid, batch);
     }
-    nethuns_flush(netdev->sock);
 
-    if (!concurrent_txq)
-        ovs_mutex_unlock(&netdev->mutex);
-    dp_packet_delete_batch(batch, true);
-
-    return 0;
+    return ret;
 }
 
 /*
@@ -519,11 +580,12 @@ netdev_nethuns_update_flags(struct netdev *netdev_, enum netdev_flags off,
     return error;
 }
 
-#define NETDEV_BSD_CLASS_COMMON                      \
+#define NETDEV_NETHUNS_CLASS_COMMON                      \
     .run = netdev_nethuns_run,                           \
     .wait = netdev_nethuns_wait,                         \
     .alloc = netdev_nethuns_alloc,                       \
     .construct = netdev_nethuns_construct,               \
+    .reconfigure = netdev_nethuns_reconfigure,           \
     .destruct = netdev_nethuns_destruct,                 \
     .dealloc = netdev_nethuns_dealloc,                   \
     .send = netdev_nethuns_send,                         \
@@ -540,16 +602,14 @@ netdev_nethuns_update_flags(struct netdev *netdev_, enum netdev_flags off,
     .get_next_hop = netdev_nethuns_get_next_hop,         \
     .arp_lookup = netdev_nethuns_arp_lookup,             \
     .update_flags = netdev_nethuns_update_flags,         \
-    .rxq_alloc = netdev_nethuns_rxq_alloc,               \
     .rxq_construct = netdev_nethuns_rxq_construct,       \
     .rxq_destruct = netdev_nethuns_rxq_destruct,         \
-    .rxq_dealloc = netdev_nethuns_rxq_dealloc,           \
     .rxq_recv = netdev_nethuns_rxq_recv,                 \
     .rxq_wait = netdev_nethuns_rxq_wait,                 \
     .rxq_drain = netdev_nethuns_rxq_drain
 
 const struct netdev_class netdev_nethuns_class = {
-    NETDEV_BSD_CLASS_COMMON,
+    NETDEV_NETHUNS_CLASS_COMMON,
     .type = "nethuns",
     .is_pmd = true,
 };

@@ -19,7 +19,7 @@
 
 #ifdef HAVE_NETHUNS
 
-#define NETHUNS_SOCKET NETHUNS_SOCKET_NETMAP
+#define NETHUNS_SOCKET NETHUNS_SOCKET_XDP
 #include <nethuns/nethuns.h>
 
 void free_nethuns_buf(struct dp_packet *p);
