@@ -134,6 +134,8 @@ nethuns_configure_all(struct netdev *netdev)
                     netdev_get_name(netdev), i, dev->socks[i]->base.errbuf);
             goto err;
         }
+        VLOG_DBG("%s: created nethuns socket for queue %d",
+                netdev_get_name(netdev), i);
     }
 
     n_txq = netdev_n_txq(netdev);
@@ -211,11 +213,18 @@ netdev_nethuns_alloc(void)
 }
 
 static int
-netdev_nethuns_construct(struct netdev *netdev_)
+netdev_nethuns_construct(struct netdev *netdev)
 {
-    struct netdev_nethuns *netdev = netdev_nethuns_cast(netdev_);
+    struct netdev_nethuns *dev = netdev_nethuns_cast(netdev);
 
-    ovs_mutex_init(&netdev->mutex);
+    ovs_mutex_init(&dev->mutex);
+    netdev->n_rxq = 0;
+    netdev->n_txq = 0;
+    dev->requested_n_rxq = NR_QUEUE;
+    dev->socks = NULL;
+    dev->tx_locks = NULL;
+
+    netdev_request_reconfigure(netdev);
 
     return 0;
 }
@@ -279,6 +288,14 @@ out:
     return err;
 }
 
+static struct netdev_rxq *
+netdev_nethuns_rxq_alloc(void)
+{
+    struct netdev_rxq *rx = xzalloc(sizeof *rx);
+    return rx;
+}
+
+
 static int
 netdev_nethuns_rxq_construct(struct netdev_rxq *rxq OVS_UNUSED)
 {
@@ -288,6 +305,12 @@ netdev_nethuns_rxq_construct(struct netdev_rxq *rxq OVS_UNUSED)
 static void
 netdev_nethuns_rxq_destruct(struct netdev_rxq *rxq OVS_UNUSED)
 {
+}
+
+static void
+netdev_nethuns_rxq_dealloc(struct netdev_rxq *rxq)
+{
+    free(rxq);
 }
 
 static int
@@ -308,6 +331,7 @@ netdev_nethuns_rxq_recv(struct netdev_rxq *rxq, struct dp_packet_batch *batch,
         pkt_id = nethuns_recv(sock, &pkthdr, &frame);
         if (!pkt_id)
             break;
+        //VLOG_DBG("%s: received pkt %lu", netdev_get_name(netdev), pkt_id);
         slot = nethuns_ring_get_slot(&nethuns_socket(sock)->rx_ring, pkt_id - 1);
         npacket = (struct dp_packet_nethuns *)&slot->packet;
         packet = &npacket->packet;
@@ -356,6 +380,7 @@ __netdev_nethuns_send(struct netdev_nethuns *dev, int qid,
         size_t size = dp_packet_size(packet);
 
         nethuns_send(sock, data, size);
+        //VLOG_DBG("%s: sending %lu bytes", netdev_get_name(&dev->up), size);
     }
     nethuns_flush(sock);
 
@@ -580,6 +605,26 @@ netdev_nethuns_update_flags(struct netdev *netdev_, enum netdev_flags off,
     return error;
 }
 
+static int
+netdev_nethuns_set_config(struct netdev *netdev, const struct smap *args,
+                        char **errp OVS_UNUSED)
+{
+    struct netdev_nethuns *dev = netdev_nethuns_cast(netdev);
+    int new_n_rxq;
+
+    ovs_mutex_lock(&dev->mutex);
+    new_n_rxq = MAX(smap_get_int(args, "n_rxq", NR_QUEUE), 1);
+    VLOG_DBG("%s: requested %d queues (old %d)",
+            netdev_get_name(netdev), new_n_rxq, dev->requested_n_rxq);
+
+    if (dev->requested_n_rxq != new_n_rxq) {
+        dev->requested_n_rxq = new_n_rxq;
+        netdev_request_reconfigure(netdev);
+    }
+    ovs_mutex_unlock(&dev->mutex);
+    return 0;
+}
+
 #define NETDEV_NETHUNS_CLASS_COMMON                      \
     .run = netdev_nethuns_run,                           \
     .wait = netdev_nethuns_wait,                         \
@@ -602,11 +647,14 @@ netdev_nethuns_update_flags(struct netdev *netdev_, enum netdev_flags off,
     .get_next_hop = netdev_nethuns_get_next_hop,         \
     .arp_lookup = netdev_nethuns_arp_lookup,             \
     .update_flags = netdev_nethuns_update_flags,         \
+    .rxq_alloc = netdev_nethuns_rxq_alloc,               \
     .rxq_construct = netdev_nethuns_rxq_construct,       \
     .rxq_destruct = netdev_nethuns_rxq_destruct,         \
+    .rxq_dealloc = netdev_nethuns_rxq_dealloc,           \
     .rxq_recv = netdev_nethuns_rxq_recv,                 \
     .rxq_wait = netdev_nethuns_rxq_wait,                 \
-    .rxq_drain = netdev_nethuns_rxq_drain
+    .rxq_drain = netdev_nethuns_rxq_drain,               \
+    .set_config = netdev_nethuns_set_config
 
 const struct netdev_class netdev_nethuns_class = {
     NETDEV_NETHUNS_CLASS_COMMON,
